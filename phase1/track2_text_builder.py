@@ -191,17 +191,20 @@ def build_candidate_text(c: dict) -> str:
         f"Skills: {skills_block}",
         f"Education: {education_block}",
     ]
-    return '\n\n'.join(sections)
+    text = '\n\n'.join(sections)
+    instruction = "Represent this candidate profile for matching to a job description: "
+    return instruction + text
 
 
 def build_jd_text(jd: dict) -> str:
     """
     Builds the JD text for embedding from the parsed JD dict.
-    Uses jd['jd_text'] — the full raw JD text extracted from the docx.
-    No truncation — the JD is the anchor, give it full context.
-    Returns jd['jd_text'] directly.
+    Prefixes with BGE instruction for asymmetric retrieval — the model
+    was trained with instruction prefixes and produces more discriminative
+    scores when used correctly for query-document matching tasks.
     """
-    return jd['jd_text']
+    instruction = "Represent this job description for retrieving matching candidate profiles: "
+    return instruction + jd['jd_text']
 
 
 if __name__ == '__main__':
