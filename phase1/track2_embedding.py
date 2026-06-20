@@ -143,7 +143,8 @@ def _merge_track1_details(hard, avail, cred):
     return merged
 
 
-def run(input_path: str, artifacts_dir: str = 'artifacts', batch_size: int = 64) -> None:
+def run(input_path: str, artifacts_dir: str = 'artifacts', batch_size: int = 256,
+        device: str = None) -> None:
     """
     Full Phase 1 pipeline:
     1. Load all candidates from input_path
@@ -152,6 +153,8 @@ def run(input_path: str, artifacts_dir: str = 'artifacts', batch_size: int = 64)
     4. Load BGE model and embed everything
     5. Compute semantic scores
     6. Save artifacts
+
+    device: 'cpu' or 'cuda'. If None, auto-detects (cuda if available else cpu).
     """
     os.makedirs(artifacts_dir, exist_ok=True)
     total_start = time.time()
@@ -180,9 +183,12 @@ def run(input_path: str, artifacts_dir: str = 'artifacts', batch_size: int = 64)
 
     # [4/6] Load model
     t = time.time()
-    print('[4/6] Loading embedding model...', end='', flush=True)
+    import torch
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f'[4/6] Loading embedding model on {device}...', end='', flush=True)
     from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer(MODEL_NAME)
+    model = SentenceTransformer(MODEL_NAME, device=device)
     print(f'    done in {time.time() - t:.1f}s')
 
     # [5/6] Embed candidates (batched) + JD (single vector, separately)
@@ -295,8 +301,14 @@ if __name__ == '__main__':
     parser.add_argument(
         '--batch-size',
         type=int,
-        default=64,
-        help='Embedding batch size'
+        default=256,  # was 64 — larger batches are faster on GPU
+        help='Embedding batch size. Use 64 for CPU, 256+ for GPU.'
+    )
+    parser.add_argument(
+        '--device',
+        default=None,
+        help='Device to use for embedding: cpu or cuda. Defaults to auto-detect '
+             '(cuda if available, else cpu).'
     )
     parser.add_argument(
         '--verify',
@@ -308,4 +320,4 @@ if __name__ == '__main__':
     if args.verify:
         verify_artifacts(args.artifacts)
     else:
-        run(args.input, args.artifacts, args.batch_size)
+        run(args.input, args.artifacts, args.batch_size, args.device)
