@@ -21,6 +21,8 @@ import re
 
 from field_map import TIER_1_CITIES, CONSULTING_FIRMS
 
+import os as _os
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
 
 # ── recognition vocabularies (what to look for, not what to return) ──
 
@@ -198,7 +200,9 @@ def extract_seniority(text):
     return 'mid'
 
 
-def parse_jd(jd_path='job_description.docx'):
+def parse_jd(jd_path=None):
+    if jd_path is None:
+        jd_path = _os.path.join(_HERE, 'job_description.docx')
     jd_text = extract_text_from_docx(jd_path)
     yoe_min, yoe_max = extract_yoe(jd_text)
     return {
