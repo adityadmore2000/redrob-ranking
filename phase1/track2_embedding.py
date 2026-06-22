@@ -60,7 +60,6 @@ for _p in (_PROJECT_ROOT, _THIS_DIR):
         sys.path.insert(0, _p)
 
 import numpy as np
-from tqdm import tqdm
 
 from field_map import get_candidate_id
 from track2_text_builder import build_candidate_text, build_jd_text
@@ -72,9 +71,17 @@ MODEL_NAME = 'BAAI/bge-base-en-v1.5'
 
 
 def load_candidates(input_path: str) -> list:
-    """Load all candidates from a JSONL file (one JSON object per line)."""
-    candidates = []
+    """
+    Load all candidates from a JSONL file (one JSON object per line). Also
+    accepts a single JSON array (the data/sample_candidates.json fixture) so
+    sanity checks can run against the sample without a JSONL conversion.
+    """
     with open(input_path) as f:
+        head = f.read(1)
+        f.seek(0)
+        if head == '[':
+            return json.load(f)
+        candidates = []
         for line in f:
             line = line.strip()
             if not line:
@@ -90,6 +97,8 @@ def embed_texts(texts: list, model, batch_size: int = 64) -> np.ndarray:
     Show tqdm progress bar.
     Returns numpy array of shape (len(texts), embedding_dim).
     """
+    from tqdm import tqdm  # imported lazily so Track-1-only runs need no tqdm
+
     embeddings = []
     for start in tqdm(range(0, len(texts), batch_size), desc='Embedding', unit='batch'):
         batch = texts[start:start + batch_size]
@@ -144,7 +153,7 @@ def _merge_track1_details(hard, avail, cred):
 
 
 def run(input_path: str, artifacts_dir: str = 'artifacts', batch_size: int = 256,
-        device: str = None) -> None:
+        device: str = None, skip_embeddings: bool = False) -> None:
     """
     Full Phase 1 pipeline:
     1. Load all candidates from input_path
@@ -155,6 +164,14 @@ def run(input_path: str, artifacts_dir: str = 'artifacts', batch_size: int = 256
     6. Save artifacts
 
     device: 'cpu' or 'cuda'. If None, auto-detects (cuda if available else cpu).
+
+    skip_embeddings: when True, only recompute and re-save the Track 1
+    artifacts — candidate_ids.npy, hard_filter_scores.npy,
+    availability_scores.npy, credibility_scores.npy, and the merged
+    track1_details.pkl. Steps [3]-[5] (text building, model load, embedding)
+    are skipped entirely, and semantic_scores.npy / jd_embedding.npy are left
+    untouched. Use this to repair a stale or hard-filter-only
+    track1_details.pkl without paying for a full GPU embedding pass.
     """
     os.makedirs(artifacts_dir, exist_ok=True)
     total_start = time.time()
@@ -174,6 +191,28 @@ def run(input_path: str, artifacts_dir: str = 'artifacts', batch_size: int = 256
     cred = track1_credibility.compute_all(candidates)
     track1_details = _merge_track1_details(hard, avail, cred)
     print(f'  done in {time.time() - t:.1f}s')
+
+    candidate_ids = np.array([get_candidate_id(c) for c in candidates], dtype=object)
+    hard_scores = np.array([r['hard_filter_score'] for r in hard], dtype=np.float32)
+    avail_scores = np.array([r['availability_score'] for r in avail], dtype=np.float32)
+    cred_scores = np.array([r['credibility_score'] for r in cred], dtype=np.float32)
+
+    if skip_embeddings:
+        # Track-1-only path: re-save everything except the embedding artifacts.
+        # semantic_scores.npy and jd_embedding.npy are deliberately left as-is.
+        t = time.time()
+        print('[skip-embeddings] Saving Track 1 artifacts only '
+              '(semantic_scores.npy / jd_embedding.npy untouched)...',
+              end='', flush=True)
+        np.save(os.path.join(artifacts_dir, 'candidate_ids.npy'), candidate_ids)
+        np.save(os.path.join(artifacts_dir, 'hard_filter_scores.npy'), hard_scores)
+        np.save(os.path.join(artifacts_dir, 'availability_scores.npy'), avail_scores)
+        np.save(os.path.join(artifacts_dir, 'credibility_scores.npy'), cred_scores)
+        with open(os.path.join(artifacts_dir, 'track1_details.pkl'), 'wb') as f:
+            pickle.dump(track1_details, f)
+        print(f'  done in {time.time() - t:.1f}s')
+        print(f'Total time: {time.time() - total_start:.1f}s')
+        return
 
     # [3/6] Candidate texts
     t = time.time()
@@ -207,11 +246,6 @@ def run(input_path: str, artifacts_dir: str = 'artifacts', batch_size: int = 256
     # [6/6] Save artifacts (parallel arrays share candidate order)
     t = time.time()
     print('[6/6] Saving artifacts...', end='', flush=True)
-    candidate_ids = np.array([get_candidate_id(c) for c in candidates], dtype=object)
-    hard_scores = np.array([r['hard_filter_score'] for r in hard], dtype=np.float32)
-    avail_scores = np.array([r['availability_score'] for r in avail], dtype=np.float32)
-    cred_scores = np.array([r['credibility_score'] for r in cred], dtype=np.float32)
-
     np.save(os.path.join(artifacts_dir, 'candidate_ids.npy'), candidate_ids)
     np.save(os.path.join(artifacts_dir, 'semantic_scores.npy'),
             semantic_scores.astype(np.float32))
@@ -315,9 +349,18 @@ if __name__ == '__main__':
         action='store_true',
         help='Verify existing artifacts instead of running the pipeline'
     )
+    parser.add_argument(
+        '--skip-embeddings',
+        action='store_true',
+        help='Only recompute Track 1 artifacts (candidate_ids, the three '
+             'Track 1 score arrays, and the merged track1_details.pkl). Skips '
+             'the embedding model entirely and leaves semantic_scores.npy and '
+             'jd_embedding.npy untouched.'
+    )
     args = parser.parse_args()
 
     if args.verify:
         verify_artifacts(args.artifacts)
     else:
-        run(args.input, args.artifacts, args.batch_size, args.device)
+        run(args.input, args.artifacts, args.batch_size, args.device,
+            skip_embeddings=args.skip_embeddings)
