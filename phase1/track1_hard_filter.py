@@ -9,6 +9,7 @@ hard_filter_score = location_score
                   * yoe_score
                   * work_mode_score
                   * consulting_penalty
+                  * tenure_score
 
 Sub-scores
 ----------
@@ -17,8 +18,8 @@ location_score     : Based on city/country and willingness to relocate.
                      Other Tier-1 India            = 0.9
                      Non Tier-1 India + relocate   = 0.6
                      Non Tier-1 India              = 0.3
-                     Outside India + relocate      = 0.4
-                     Outside India                 = 0.1
+                     Outside India + relocate      = 0.6
+                     Outside India                 = 0.3
 
 yoe_score          : Based on years of experience vs JD range (5-9 yrs).
                      Ideal range [yoe_min, yoe_max]     = 1.0
@@ -29,9 +30,16 @@ work_mode_score    : Candidate preferred mode vs JD preferred modes.
                      Mode in JD preferred modes = 1.0
                      Otherwise                  = 0.8
 
-consulting_penalty : Current company is a disqualified consulting firm.
-                     Firm match  = 0.3
-                     No match    = 1.0
+consulting_penalty : Entire career history is disqualified consulting firms.
+                     All jobs at consulting firms = 0.3
+                     Any non-consulting experience = 1.0
+
+tenure_score       : Average job tenure (title-chasing signal).
+                     avg >= 24 months          = 1.0
+                     18 <= avg < 24            = 0.85
+                     12 <= avg < 18            = 0.70
+                     avg < 12                  = 0.50
+                     no usable tenure data     = 0.75
 
 All field access goes through field_map accessors.
 All thresholds come from field_map constants or jd_parser.JD.
@@ -51,8 +59,17 @@ from field_map import (
     get_yoe,
     get_preferred_work_mode,
     get_current_company,
+    get_career_sorted,
     TIER_1_CITIES,
     CONSULTING_FIRMS,
+    TENURE_IDEAL_MONTHS,
+    TENURE_STABLE_MONTHS,
+    TENURE_MODERATE_MONTHS,
+    TENURE_SCORE_IDEAL,
+    TENURE_SCORE_STABLE,
+    TENURE_SCORE_MODERATE,
+    TENURE_SCORE_SHORT,
+    TENURE_SCORE_UNKNOWN,
 )
 from jd_parser import JD
 
@@ -72,7 +89,7 @@ def _city_matches(location, city):
 
 def location_score(c):
     """
-    country != India -> 0.4 if willing to relocate else 0.1
+    country != India -> 0.6 if willing to relocate else 0.3
     country == India:
         city in a JD-named city (Pune/Noida) -> 1.0
         city in another Tier-1 city          -> 0.9
@@ -82,7 +99,7 @@ def location_score(c):
     willing = bool(get_willing_to_relocate(c))
 
     if country != 'india':
-        return 0.4 if willing else 0.1
+        return 0.6 if willing else 0.3
 
     location = get_location(c)
     if any(_city_matches(location, city) for city in _JD_OFFICE_CITIES):
@@ -120,14 +137,69 @@ def work_mode_score(c):
     return 1.0 if mode in preferred else 0.8
 
 
-def consulting_penalty(c):
-    """current company matches any disqualified consulting firm -> 0.3 else 1.0."""
-    company = get_current_company(c).lower()
+def _is_consulting_firm(company):
+    """True if the company name matches any disqualified consulting firm."""
+    company = (company or '').lower()
     if not company:
-        return 1.0
-    if any(firm in company for firm in CONSULTING_FIRMS):
+        return False
+    return any(firm in company for firm in CONSULTING_FIRMS)
+
+
+def consulting_penalty(c):
+    """
+    Penalize candidates whose ENTIRE career history is consulting firms.
+
+    - All career-history jobs at consulting firms -> 0.3
+    - At least one prior/other job at a non-consulting firm -> 1.0
+      (e.g. currently at a consulting firm but has non-consulting experience)
+    - No usable career history -> fall back to current company match.
+    """
+    career = get_career_sorted(c)
+    companies = [job['company'] for job in career if job.get('company')]
+
+    if not companies:
+        # No career history to judge — fall back to current company.
+        return 0.3 if _is_consulting_firm(get_current_company(c)) else 1.0
+
+    if all(_is_consulting_firm(co) for co in companies):
         return 0.3
     return 1.0
+
+
+def average_tenure_months(c):
+    """
+    Mean of duration_months across all career-history jobs.
+    Returns None when there is no usable duration data (empty history or
+    all durations missing/zero).
+    """
+    career = get_career_sorted(c)
+    durations = [job.get('duration_months') or 0 for job in career]
+    durations = [d for d in durations if d]
+    if not durations:
+        return None
+    return sum(durations) / len(durations)
+
+
+def tenure_score(c):
+    """
+    Average job tenure as a title-chasing signal.
+
+    avg >= 24 months          -> 1.0   (stable)
+    18 <= avg < 24            -> 0.85
+    12 <= avg < 18            -> 0.70
+    avg < 12                  -> 0.50  (switching every year)
+    no usable tenure data     -> 0.75  (neutral)
+    """
+    avg = average_tenure_months(c)
+    if avg is None:
+        return TENURE_SCORE_UNKNOWN
+    if avg >= TENURE_IDEAL_MONTHS:
+        return TENURE_SCORE_IDEAL
+    if avg >= TENURE_STABLE_MONTHS:
+        return TENURE_SCORE_STABLE
+    if avg >= TENURE_MODERATE_MONTHS:
+        return TENURE_SCORE_MODERATE
+    return TENURE_SCORE_SHORT
 
 
 def compute_hard_filter_score(c: dict) -> dict:
@@ -139,18 +211,24 @@ def compute_hard_filter_score(c: dict) -> dict:
         'yoe_score': float,
         'work_mode_score': float,
         'consulting_penalty': float,
+        'tenure_score': float,
+        'average_tenure_months': float | None,
     }
     """
     loc = location_score(c)
     yoe = yoe_score(c)
     wm = work_mode_score(c)
     pen = consulting_penalty(c)
+    ten = tenure_score(c)
+    avg_tenure = average_tenure_months(c)
     return {
-        'hard_filter_score': loc * yoe * wm * pen,
+        'hard_filter_score': loc * yoe * wm * pen * ten,
         'location_score': loc,
         'yoe_score': yoe,
         'work_mode_score': wm,
         'consulting_penalty': pen,
+        'tenure_score': ten,
+        'average_tenure_months': avg_tenure,
     }
 
 
@@ -210,7 +288,7 @@ if __name__ == '__main__':
 
     components = [
         'location_score', 'yoe_score', 'work_mode_score',
-        'consulting_penalty', 'hard_filter_score',
+        'consulting_penalty', 'tenure_score', 'hard_filter_score',
     ]
 
     print(f"Loaded {len(candidates)} candidates from {candidates_path}\n")
@@ -238,4 +316,6 @@ if __name__ == '__main__':
         print(f"    yoe_score          = {r['yoe_score']}")
         print(f"    work_mode_score    = {r['work_mode_score']}")
         print(f"    consulting_penalty = {r['consulting_penalty']}")
+        print(f"    tenure_score          = {r['tenure_score']}")
+        print(f"    average_tenure_months = {r['average_tenure_months']}")
         print(f"    hard_filter_score  = {r['hard_filter_score']:.4f}")

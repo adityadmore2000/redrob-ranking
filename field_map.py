@@ -236,6 +236,16 @@ NOTICE_PERIOD_SCORES = {
     150: 0.40,
 }
 
+# average job tenure thresholds (months) + scores for title-chasing check
+TENURE_IDEAL_MONTHS = 24
+TENURE_STABLE_MONTHS = 18
+TENURE_MODERATE_MONTHS = 12
+TENURE_SCORE_IDEAL = 1.0
+TENURE_SCORE_STABLE = 0.85
+TENURE_SCORE_MODERATE = 0.70
+TENURE_SCORE_SHORT = 0.50
+TENURE_SCORE_UNKNOWN = 0.75
+
 # education tier scores for credibility
 EDUCATION_TIER_SCORES = {
     1: 1.0,   # tier_1
