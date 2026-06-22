@@ -51,6 +51,19 @@ compute_hard_filter_score(c)  -> dict with score components + final score
 compute_all(candidates)       -> list of dicts with candidate_id + components
 """
 
+import os as _os
+import sys as _sys
+
+# Make both the project root (field_map, jd_parser) and this phase1/ directory
+# importable regardless of how the script is launched: `python
+# phase1/track1_hard_filter.py` puts only phase1/ on sys.path, while
+# `python -m phase1.track1_hard_filter` puts only the project root.
+_THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
+_PROJECT_ROOT = _os.path.dirname(_THIS_DIR)
+for _p in (_PROJECT_ROOT, _THIS_DIR):
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+
 from field_map import (
     get_candidate_id,
     get_location,
@@ -245,77 +258,129 @@ def compute_all(candidates: list) -> list:
     return results
 
 
-if __name__ == '__main__':
+def _load_candidates(input_path):
+    """
+    Load candidates from a path. Supports JSONL (one JSON object per line) and
+    a single JSON array (the data/sample_candidates.json fixture).
+    """
     import json
+    with open(input_path) as f:
+        head = f.read(1)
+        f.seek(0)
+        if head == '[':
+            # Single JSON array (sample fixture).
+            return json.load(f)
+        candidates = []
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            candidates.append(json.loads(line))
+        return candidates
+
+
+def run(input_path, artifacts_dir='artifacts'):
+    """
+    Compute hard-filter scores for every candidate in input_path and save:
+        hard_filter_scores.npy   shape (N,) float32
+        track1_details.pkl       list of N per-candidate detail dicts
+    candidate_ids.npy is shared across Phase 1 scripts (saved by
+    track2_embedding.py) — only written here if it does not already exist.
+    Other artifacts (semantic/availability/credibility/jd_embedding) are
+    untouched.
+    """
     import os
+    import pickle
+    import time
+    import numpy as np
 
-    # Prefer the full dataset (JSONL, one record per line). Fall back to the
-    # provided 50-record fixture (a single JSON array) when it isn't present.
-    jsonl_path = os.path.join('data', 'candidates.jsonl')
-    sample_path = os.path.join('data', 'sample_candidates.json')
+    os.makedirs(artifacts_dir, exist_ok=True)
+    total_start = time.time()
 
-    LIMIT = 1000
-    candidates = []
-    if os.path.exists(jsonl_path):
-        candidates_path = jsonl_path
-        with open(jsonl_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                candidates.append(json.loads(line))
-                if len(candidates) >= LIMIT:
-                    break
-    elif os.path.exists(sample_path):
-        candidates_path = sample_path
-        with open(sample_path) as f:
-            candidates = json.load(f)[:LIMIT]
+    print(f'Loading candidates from {input_path} ...', flush=True)
+    candidates = _load_candidates(input_path)
+    n = len(candidates)
+    print(f'  {n} candidates loaded')
+
+    candidate_ids = []
+    hard_filter_scores = []
+    track1_details = []
+    for i, c in enumerate(candidates):
+        scores = compute_hard_filter_score(c)
+        scores['candidate_id'] = get_candidate_id(c)
+        candidate_ids.append(scores['candidate_id'])
+        hard_filter_scores.append(scores['hard_filter_score'])
+        track1_details.append(scores)
+        if (i + 1) % 10000 == 0:
+            print(f'  scored {i + 1}/{n} candidates '
+                  f'({time.time() - total_start:.1f}s elapsed)', flush=True)
+
+    hard_filter_scores = np.array(hard_filter_scores, dtype=np.float32)
+
+    np.save(os.path.join(artifacts_dir, 'hard_filter_scores.npy'),
+            hard_filter_scores)
+    with open(os.path.join(artifacts_dir, 'track1_details.pkl'), 'wb') as f:
+        pickle.dump(track1_details, f)
+
+    # candidate_ids.npy is shared across all Phase 1 scripts and is normally
+    # saved by track2_embedding.py. Only write it if it is not already present,
+    # so we never clobber the canonical ordering.
+    ids_path = os.path.join(artifacts_dir, 'candidate_ids.npy')
+    if os.path.exists(ids_path):
+        print(f'  candidate_ids.npy already exists — not overwriting')
     else:
-        raise SystemExit(
-            "No candidate data found. Expected data/candidates.jsonl "
-            "(full JSONL dataset) or data/sample_candidates.json (sample array). "
-            "Copy a dataset into the data/ directory before running."
-        )
+        np.save(ids_path, np.array(candidate_ids, dtype=object))
+        print(f'  candidate_ids.npy not found — saved {n} ids')
 
-    results = compute_all(candidates)
+    print(f'Saved hard_filter_scores.npy {hard_filter_scores.shape} and '
+          f'track1_details.pkl ({len(track1_details)} dicts) to {artifacts_dir}')
+    print(f'Total time: {time.time() - total_start:.1f}s')
 
-    def pctile(values, q):
-        s = sorted(values)
-        if not s:
-            return float('nan')
-        idx = min(len(s) - 1, max(0, int(round(q * (len(s) - 1)))))
-        return s[idx]
 
-    components = [
-        'location_score', 'yoe_score', 'work_mode_score',
-        'consulting_penalty', 'tenure_score', 'hard_filter_score',
-    ]
+def verify(artifacts_dir='artifacts'):
+    """Load the saved hard-filter artifacts and print a short summary."""
+    import os
+    import pickle
+    import numpy as np
 
-    print(f"Loaded {len(candidates)} candidates from {candidates_path}\n")
-    print(f"{'component':20} {'min':>6} {'p25':>6} {'median':>7} {'p75':>6} {'max':>6}")
-    print('-' * 60)
-    for comp in components:
-        vals = [r[comp] for r in results]
-        print(
-            f"{comp:20} "
-            f"{min(vals):6.3f} {pctile(vals, 0.25):6.3f} "
-            f"{pctile(vals, 0.50):7.3f} {pctile(vals, 0.75):6.3f} "
-            f"{max(vals):6.3f}"
-        )
+    hard = np.load(os.path.join(artifacts_dir, 'hard_filter_scores.npy'))
+    with open(os.path.join(artifacts_dir, 'track1_details.pkl'), 'rb') as f:
+        track1_details = pickle.load(f)
 
-    print("\nSample candidates:")
-    for c, r in list(zip(candidates, results))[:3]:
+    print(f'hard_filter_scores.npy shape: {hard.shape}')
+    print(f'track1_details: {len(track1_details)} dicts')
+    print('\nFirst 3 track1_details entries:')
+    for row in track1_details[:3]:
         print('-' * 60)
-        print(f"  candidate_id : {r['candidate_id']}")
-        print(f"  location     : {get_location(c)!r} ({get_country(c)!r}), "
-              f"relocate={get_willing_to_relocate(c)}")
-        print(f"  yoe          : {get_yoe(c)}")
-        print(f"  work_mode    : {get_preferred_work_mode(c)!r}")
-        print(f"  company      : {get_current_company(c)!r}")
-        print(f"    location_score     = {r['location_score']}")
-        print(f"    yoe_score          = {r['yoe_score']}")
-        print(f"    work_mode_score    = {r['work_mode_score']}")
-        print(f"    consulting_penalty = {r['consulting_penalty']}")
-        print(f"    tenure_score          = {r['tenure_score']}")
-        print(f"    average_tenure_months = {r['average_tenure_months']}")
-        print(f"    hard_filter_score  = {r['hard_filter_score']:.4f}")
+        for k, v in row.items():
+            print(f'  {k}: {v}')
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Compute and save hard-filter scores for all candidates.'
+    )
+    parser.add_argument(
+        '--input',
+        default='/kaggle/input/datasets/moreadityad/candidate-dataset/candidates.jsonl',
+        help='Path to candidates.jsonl (or a JSON array fixture)',
+    )
+    parser.add_argument(
+        '--artifacts',
+        default='artifacts',
+        help='Directory to save artifacts',
+    )
+    parser.add_argument(
+        '--verify',
+        action='store_true',
+        help='Verify existing artifacts instead of running the pipeline',
+    )
+    args = parser.parse_args()
+
+    if args.verify:
+        verify(args.artifacts)
+    else:
+        run(args.input, args.artifacts)
+        verify(args.artifacts)
