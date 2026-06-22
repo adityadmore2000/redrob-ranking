@@ -272,11 +272,78 @@ def _clean(text):
     return ' '.join(text.replace(',', ';').split())
 
 
-def build_reasoning(rank, profile, candidate, det, semantic_norm):
+# Generic openers that signal a low-information, templated description. When a
+# description starts with one of these we keep only its first sentence.
+_GENERIC_DESC_OPENERS = (
+    'built systems that',
+    'worked at the intersection',
+    'responsible for',
+    'worked on',
+    'helped build',
+    'contributed to',
+)
+
+
+def _career_clause(title, company, industry, desc, prev_desc_key):
+    """
+    Build the current-role evidence clause, returning (clause_or_empty, key).
+
+    - Skip the description entirely if it is empty or under 30 chars.
+    - For descriptions opening with a generic phrase, keep only the first
+      sentence, capped at 100 chars (not the full 200).
+    - Otherwise use up to 200 chars.
+    - If the resulting first-100-char fingerprint matches the previous
+      candidate's, fall back to a constructed sentence so consecutive rows do
+      not share the same description text.
+
+    prev_desc_key is the fingerprint from the previous candidate (or None).
+    The returned key is this candidate's fingerprint, to be threaded forward.
+    """
+    desc = (desc or '').strip()
+
+    def _fallback():
+        parts = []
+        if title:
+            parts.append(f'Currently {title}')
+            if company:
+                parts[-1] += f' at {company}'
+        elif company:
+            parts.append(f'Currently at {company}')
+        if industry:
+            parts.append(f'in {industry} industry')
+        if not parts:
+            return ''
+        return 'Current role: ' + ' '.join(parts) + '.'
+
+    if len(desc) < 30:
+        # Nothing meaningful to quote — use the constructed sentence.
+        return _fallback(), None
+
+    lowered = desc.lower()
+    if any(lowered.startswith(op) for op in _GENERIC_DESC_OPENERS):
+        snippet = desc.split('.', 1)[0][:100].rstrip()
+    else:
+        snippet = desc[:200].rstrip()
+
+    fingerprint = snippet[:100]
+    if prev_desc_key is not None and fingerprint == prev_desc_key:
+        # Same description as the immediately preceding candidate — avoid the
+        # templated look by constructing a sentence instead.
+        return _fallback(), fingerprint
+
+    return 'Current role: ' + snippet + '.', fingerprint
+
+
+def build_reasoning(rank, profile, candidate, det, semantic_norm,
+                    prev_desc_key=None):
     """
     Compose an honest, profile-specific reasoning sentence. Strengths first,
     JD connections next, concerns flagged plainly, closing assessment toned to
     the candidate's rank position. Only cites facts present in the profile.
+
+    prev_desc_key threads the previous candidate's description fingerprint so
+    consecutive rows never reuse the same career text. Returns
+    (reasoning, desc_key) where desc_key feeds the next call.
     """
     skills_list = candidate.get('skills', []) or []
     career = candidate.get('career_history', []) or []
@@ -329,38 +396,75 @@ def build_reasoning(rank, profile, candidate, det, semantic_norm):
 
     sentences = [header + '.', match + '.', skill_str + '.']
 
-    # ── current-role evidence (first 200 chars) ──
-    if desc:
-        sentences.append('Current role: ' + desc[:200].rstrip() + '.')
+    # ── current-role evidence (smart, non-repeating) ──
+    industry = (profile.get('current_industry') or '').strip()
+    career_clause, desc_key = _career_clause(
+        title, company, industry, desc, prev_desc_key
+    )
+    if career_clause:
+        sentences.append(career_clause)
 
-    # ── honest concerns ──
-    concerns = []
-    notice_days = signals.get('notice_period_days')
-    if isinstance(notice_days, (int, float)):
-        if notice_days >= 90:
-            concerns.append(f'notice period {int(notice_days)}d (long)')
-        elif notice_days <= 30:
-            concerns.append(f'notice period {int(notice_days)}d (buyable)')
-    gh = signals.get('github_activity_score', -1)
-    if gh is None or gh == -1:
-        concerns.append('no GitHub linked — external validation limited')
-    elif float(det.get('github_signal', 0)) >= 0.5:
-        concerns.append(f'GitHub active (signal {float(det["github_signal"]):.2f})')
-    if outside_india and not willing:
-        concerns.append('based outside India and not open to relocating')
-    elif outside_india and willing:
-        concerns.append('outside India but open to relocating (case by case)')
-    if float(det.get('consulting_penalty', 1.0)) < 1.0:
-        concerns.append(f'consulting-only career history (penalized)')
+    # ── honest concerns (signal-driven; always at least one flag) ──
+    location_score = float(det.get('location_score', 1.0))
+    notice_sig = float(det.get('notice_period_signal', 1.0))
+    github_sig = float(det.get('github_signal', 0.0))
+    consulting_pen = float(det.get('consulting_penalty', 1.0))
+    tenure_sig = float(det.get('tenure_score', 1.0))
     avg_ten = det.get('average_tenure_months')
-    if isinstance(avg_ten, (int, float)) and avg_ten and avg_ten < 18:
-        concerns.append(f'short avg tenure ~{avg_ten:.0f}mo (job-hopping signal)')
-    if not bool(signals.get('linkedin_connected')):
-        concerns.append('LinkedIn not connected')
-    if sn < 0.3:
-        concerns.append('low semantic match to the role')
-    if concerns:
-        sentences.append('Concerns: ' + '; '.join(concerns) + '.')
+    linkedin_sig = float(det.get('linkedin_signal', 0.0))
+    loc_label = (location or country or 'location unknown')
+
+    concerns = []
+
+    # Location
+    if 0.9 <= location_score < 1.0:
+        concerns.append(
+            f'Not in office city ({loc_label}; {country}) — quarterly travel expected.')
+    elif 0.6 <= location_score < 0.9:
+        concerns.append(
+            f'Outside Pune/Noida offices ({loc_label}) — relocation or travel needed.')
+    elif location_score < 0.6:
+        concerns.append(
+            f'Outside India ({loc_label}; {country}) — case-by-case per JD.')
+
+    # Notice period (most severe flag wins)
+    if notice_sig < 0.70:
+        concerns.append('Notice period likely 90d+ — long; reduces hiring speed.')
+    elif notice_sig < 0.85:
+        concerns.append('Notice period likely 60d+ — above JD preferred sub-30d.')
+
+    # GitHub
+    if github_sig == 0.0:
+        concerns.append(
+            'No GitHub linked — external validation of technical work unavailable.')
+    elif 0.0 < github_sig < 0.3:
+        concerns.append('GitHub present but low activity — limited open-source signal.')
+
+    # Consulting
+    if consulting_pen < 1.0:
+        concerns.append(
+            'Current or recent consulting background — culture fit risk per JD.')
+
+    # Tenure
+    if tenure_sig < 0.85:
+        ten_txt = f'{avg_ten:.0f}' if isinstance(avg_ten, (int, float)) and avg_ten else 'short'
+        concerns.append(
+            f'Average tenure {ten_txt} months — job-hopping signal; '
+            'JD requires 3+ year commitment.')
+
+    # LinkedIn
+    if linkedin_sig == 0.0:
+        concerns.append('LinkedIn not connected — profile verification limited.')
+
+    # Semantic
+    if sn < 0.5:
+        concerns.append(
+            'Moderate semantic match to JD — profile relevance is borderline.')
+
+    if not concerns:
+        concerns.append('No major disqualifying signals detected.')
+
+    sentences.append('Concerns: ' + ' '.join(concerns))
 
     # ── closing assessment toned to rank ──
     if rank <= 10:
@@ -373,7 +477,7 @@ def build_reasoning(rank, profile, candidate, det, semantic_norm):
         verdict = 'Borderline fit; included for broad coverage of the top-100.'
     sentences.append(verdict)
 
-    return _clean(' '.join(sentences))
+    return _clean(' '.join(sentences)), desc_key
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -441,12 +545,15 @@ def main():
     # STEP 6 — reasoning
     t = time.time()
     rows = []
+    prev_desc_key = None
     for r, i in enumerate(top_idx, start=1):
         cid = str(candidate_ids[i])
         det = track1_details[i]
         candidate = profiles.get(cid, {})
         profile = candidate.get('profile', {}) if candidate else {}
-        reasoning = build_reasoning(r, profile, candidate, det, semantic_norm[i])
+        reasoning, prev_desc_key = build_reasoning(
+            r, profile, candidate, det, semantic_norm[i], prev_desc_key
+        )
         if not reasoning:
             reasoning = f'Ranked #{r}; profile unavailable for detailed reasoning.'
         rows.append({
