@@ -2,3 +2,4 @@ __pycache__/
 candidates.jsonl
 artifacts/
 .venv/
+.env*
