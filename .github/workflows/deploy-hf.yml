@@ -5,13 +5,13 @@ name: Deploy to Hugging Face Spaces
 on:
   push:
     branches:
-      - streamlit-demo
+      - feature/demo
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out streamlit-demo
+      - name: Check out feature/demo
         uses: actions/checkout@v4
         with:
           # Full history so the push to the Space is a normal (non-shallow) push.
@@ -23,7 +23,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           # TODO: replace <your-username>/<your-space-name> with your Space path.
           # Space URL: https://huggingface.co/spaces/<your-username>/<your-space-name>
-          HF_SPACE: <your-username>/<your-space-name>
+          HF_SPACE: adityadmore2000/redrob-ranking
         run: |
           git push --force \
             "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}.git" \
