@@ -22,7 +22,7 @@ import demo_pipeline as dp
 from demo_pipeline import InputError, MAX_CANDIDATES
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-SAMPLE_PATH = os.path.join(_HERE, 'sample_data.json')
+SAMPLE_PATH = os.path.join(_HERE, 'data', 'sample_candidates.json')
 
 # Score columns to surface with a visual bar in the results table.
 SCORE_COLS = [
@@ -126,7 +126,7 @@ if use_sample:
     try:
         with open(SAMPLE_PATH, 'rb') as f:
             raw_bytes = f.read()
-        source_name = 'sample_data.json'
+        source_name = 'sample_candidates.json'
     except OSError as exc:
         st.error(f'Could not load the bundled sample data: {exc}')
 elif uploaded is not None:

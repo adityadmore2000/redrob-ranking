@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.git/
+artifacts/
+# The full candidate dataset is huge and not needed by the demo (it loads
+# data/sample_data.json instead). Keep it out of the build context.
+data/candidates.jsonl
+eda/
+.github/
