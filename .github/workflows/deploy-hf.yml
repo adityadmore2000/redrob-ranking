@@ -1,0 +1,30 @@
+name: Deploy to Hugging Face Spaces
+
+# Deploys only when the streamlit-demo branch is pushed. The branch contents are
+# mirrored to the Space's main branch (HF Spaces always serve from main).
+on:
+  push:
+    branches:
+      - feature/demo
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature/demo
+        uses: actions/checkout@v4
+        with:
+          # Full history so the push to the Space is a normal (non-shallow) push.
+          fetch-depth: 0
+          lfs: true
+
+      - name: Push to Hugging Face Spaces (main)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # TODO: replace <your-username>/<your-space-name> with your Space path.
+          # Space URL: https://huggingface.co/spaces/<your-username>/<your-space-name>
+          HF_SPACE: adityadmore2000/redrob-ranking
+        run: |
+          git push --force \
+            "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}.git" \
+            HEAD:main

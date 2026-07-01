@@ -21,10 +21,12 @@ location_score     : Based on city/country and willingness to relocate.
                      Outside India + relocate      = 0.6
                      Outside India                 = 0.3
 
-yoe_score          : Based on years of experience vs JD range (5-9 yrs).
+yoe_score          : Based on years of experience vs the JD's parsed range
+                     (JD['yoe_min'], JD['yoe_max'] from jd_parser).
                      Ideal range [yoe_min, yoe_max]     = 1.0
                      Outer band [yoe_min-1, yoe_max+1]  = 0.85
                      Outside outer band                 = 0.6
+                     No usable range parsed from the JD = 1.0 (neutral)
 
 work_mode_score    : Candidate preferred mode vs JD preferred modes.
                      Mode in JD preferred modes = 1.0
