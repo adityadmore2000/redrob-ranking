@@ -218,7 +218,7 @@ if df is not None:
         height=560,
     )
 
-    csv_bytes = df.to_csv(index=False).encode('utf-8')
+    csv_bytes = df[['candidate_id', 'rank', 'final_score', 'reasoning']].rename(columns={'final_score': 'score'}).to_csv(index=False).encode('utf-8')
     st.download_button(
         '⬇️ Download Ranked CSV',
         data=csv_bytes,
