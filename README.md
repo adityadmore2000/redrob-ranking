@@ -1,3 +1,13 @@
+---
+title: Candidate Ranking Demo
+emoji: 🏆
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Redrob Data & AI Challenge — Candidate Ranking System
 
 A candidate ranking system for the Redrob Data & AI Challenge. Given a job
@@ -21,6 +31,23 @@ The system uses a **two-phase architecture**:
 
 All field access goes through `field_map.py`, the single source of truth for
 candidate field paths. Scoring scripts never read candidate fields directly.
+
+## Interactive demo (Streamlit / Hugging Face Spaces)
+
+A Streamlit app runs the full pipeline end-to-end on an uploaded candidate pool
+(or a built-in sample), with no pre-computed artifacts:
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+Upload a JSON array or JSONL file of up to 100 candidate objects (same schema as
+`data/sample_candidates.json`), or click **Use Sample Data**. The app scores
+Track 1 + Track 2 in memory, ranks the pool, shows the scores as an interactive
+table, and offers a ranked-CSV download. The demo logic lives in
+[`app.py`](app.py) and [`demo_pipeline.py`](demo_pipeline.py); both reuse the
+same scoring functions as the offline pipeline.
 
 ## Setup
 

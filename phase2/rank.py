@@ -588,17 +588,19 @@ def main():
 
     # STEP 7 — write CSV
     t = time.time()
-    columns = [
-        'rank', 'candidate_id', 'final_score', 'semantic_score_raw',
-        'semantic_score_norm', 'hard_filter_score', 'availability_score',
-        'credibility_score', 'reasoning',
-    ]
+    columns = ['candidate_id', 'rank', 'score', 'reasoning']
     out_dir = os.path.dirname(os.path.abspath(args.out))
     os.makedirs(out_dir, exist_ok=True)
     with open(args.out, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=columns)
+        writer = csv.DictWriter(f, fieldnames=columns, extrasaction='ignore')
         writer.writeheader()
-        writer.writerows(rows)
+        for row in rows:
+            writer.writerow({
+                'candidate_id': row['candidate_id'],
+                'rank': row['rank'],
+                'score': row['final_score'],
+                'reasoning': row['reasoning'],
+            })
     timings['CSV writing'] = time.time() - t
 
     # STEP 9 — timing
